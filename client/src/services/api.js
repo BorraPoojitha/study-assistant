@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// In production, configure environment base URL or relative path for Vite proxy/Vercel
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+// In production, configure environment base URL or fallback to deployed backend
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://server-drab-five-39.vercel.app/api';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
