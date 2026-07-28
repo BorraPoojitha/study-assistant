@@ -105,7 +105,7 @@ No extra text.`;
     const userPrompt = `Study Notes:\n"""\n${notes.trim()}\n"""`;
 
     // Candidate models to try in sequence for maximum compatibility
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    const candidateModels = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-2.5-flash'];
     let response = null;
     let lastGenError = null;
 
@@ -121,7 +121,7 @@ No extra text.`;
         if (response && response.text) break;
       } catch (err) {
         lastGenError = err;
-        // If it's an authentication error (e.g. invalid key), no need to loop further
+        // If it's an authentication error or quota error, log and keep trying next or throw
         if (
           err.message?.includes('API key') ||
           err.message?.includes('API_KEY') ||
@@ -180,6 +180,16 @@ No extra text.`;
     }
 
     const errMsg = error.message || '';
+
+    // Handle 429 Quota Exceeded
+    if (errMsg.includes('Quota exceeded') || errMsg.includes('RESOURCE_EXHAUSTED') || error.status === 429) {
+      return res.status(429).json({
+        success: false,
+        error: 'Gemini API Rate Limit / Quota Exceeded. Please generate a new key on Google AI Studio (https://aistudio.google.com/app/apikey) or wait a minute before retrying.'
+      });
+    }
+
+    // Handle Invalid Key / Auth Error
     if (
       errMsg.includes('API key not valid') ||
       errMsg.includes('API_KEY_INVALID') ||
