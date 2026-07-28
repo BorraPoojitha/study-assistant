@@ -1,5 +1,6 @@
 import express from 'express';
 import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const router = express.Router();
 
@@ -82,8 +83,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const ai = new GoogleGenAI({ apiKey });
-
     // Strict prompt as required
     const systemPrompt = `Return ONLY valid JSON.
 
@@ -103,42 +102,67 @@ No explanation.
 No extra text.`;
 
     const userPrompt = `Study Notes:\n"""\n${notes.trim()}\n"""`;
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
-    // Candidate models to try in sequence for maximum compatibility
     const candidateModels = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-2.5-flash'];
-    let response = null;
+    let rawText = null;
     let lastGenError = null;
 
-    for (const modelName of candidateModels) {
-      try {
-        response = await ai.models.generateContent({
-          model: modelName,
-          contents: `${systemPrompt}\n\n${userPrompt}`,
-          config: {
-            responseMimeType: 'application/json'
+    // Method 1: Try @google/generative-ai SDK
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      for (const mName of candidateModels) {
+        try {
+          const model = genAI.getGenerativeModel({ model: mName });
+          const result = await model.generateContent(fullPrompt);
+          const responseText = result.response.text();
+          if (responseText) {
+            rawText = responseText;
+            break;
           }
-        });
-        if (response && response.text) break;
-      } catch (err) {
-        lastGenError = err;
-        // If it's an authentication error or quota error, log and keep trying next or throw
-        if (
-          err.message?.includes('API key') ||
-          err.message?.includes('API_KEY') ||
-          err.status === 400 ||
-          err.status === 401 ||
-          err.status === 403
-        ) {
-          throw err;
+        } catch (mErr) {
+          lastGenError = mErr;
+          if (mErr.message?.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') || mErr.status === 401) {
+            throw mErr;
+          }
         }
+      }
+    } catch (sdk1Err) {
+      lastGenError = sdk1Err;
+    }
+
+    // Method 2: Try @google/genai SDK if Method 1 didn't produce rawText
+    if (!rawText) {
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        for (const mName of candidateModels) {
+          try {
+            const resp = await ai.models.generateContent({
+              model: mName,
+              contents: fullPrompt,
+              config: { responseMimeType: 'application/json' }
+            });
+            const textVal = typeof resp.text === 'function' ? resp.text() : resp.text;
+            if (textVal) {
+              rawText = textVal;
+              break;
+            }
+          } catch (mErr) {
+            lastGenError = mErr;
+            if (mErr.message?.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') || mErr.status === 401) {
+              throw mErr;
+            }
+          }
+        }
+      } catch (sdk2Err) {
+        lastGenError = sdk2Err;
       }
     }
 
-    if (!response && lastGenError) {
+    if (!rawText && lastGenError) {
       throw lastGenError;
     }
 
-    const rawText = typeof response.text === 'function' ? response.text() : response.text;
     const cleanedText = cleanJsonString(rawText);
 
     // Step 1 Validation: Safe JSON parsing
@@ -181,26 +205,24 @@ No extra text.`;
 
     const errMsg = error.message || '';
 
+    // Handle ACCESS_TOKEN_TYPE_UNSUPPORTED or 401 Auth Error
+    if (
+      errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+      errMsg.includes('API key not valid') ||
+      errMsg.includes('API_KEY_INVALID') ||
+      error.status === 401
+    ) {
+      return res.status(401).json({
+        success: false,
+        error: 'Your API key starts with AQ. which is rejected by Google API (ACCESS_TOKEN_TYPE_UNSUPPORTED). Please create a new key starting with AIzaSy on Google AI Studio (https://aistudio.google.com/app/apikey).'
+      });
+    }
+
     // Handle 429 Quota Exceeded
     if (errMsg.includes('Quota exceeded') || errMsg.includes('RESOURCE_EXHAUSTED') || error.status === 429) {
       return res.status(429).json({
         success: false,
         error: 'Gemini API Rate Limit / Quota Exceeded. Please generate a new key on Google AI Studio (https://aistudio.google.com/app/apikey) or wait a minute before retrying.'
-      });
-    }
-
-    // Handle Invalid Key / Auth Error
-    if (
-      errMsg.includes('API key not valid') ||
-      errMsg.includes('API_KEY_INVALID') ||
-      errMsg.includes('400') ||
-      errMsg.includes('401') ||
-      errMsg.includes('403') ||
-      errMsg.includes('unauthorized')
-    ) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid Gemini API Key. Please get a free API key from Google AI Studio (https://aistudio.google.com/app/apikey) and update GEMINI_API_KEY in server/.env.'
       });
     }
 
